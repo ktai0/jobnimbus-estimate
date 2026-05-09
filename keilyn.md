@@ -1,0 +1,1 @@
+i am trying to make a competing product to eagleview (https://www.eagleview.com). This will be the pipeline: the user inputs a residential address -> the ar
