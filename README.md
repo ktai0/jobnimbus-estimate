@@ -44,6 +44,7 @@ CloudNimbus takes a street address and produces:
 
 - Python 3.12+
 - Node.js 22+
+- [pnpm](https://pnpm.io/) — `brew install pnpm`
 - [uv](https://docs.astral.sh/uv/) — `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - [just](https://github.com/casey/just) — `brew install just`
 
@@ -71,12 +72,13 @@ cloudNimbus/
 │   │   ├── estimate.py         # 3-tier cost estimation
 │   │   ├── solar.py            # Solar API processing
 │   │   └── sunroof_scraper.py  # Google Solar API scraper
+│   ├── scraper/                # Puppeteer scraper (satellite + street view)
 │   └── evals/
 │       ├── benchmarks.py       # Benchmark property data
 │       ├── runner.py           # Eval runner (GIS + full modes)
 │       └── dashboard.py        # Streamlit eval dashboard
 ├── frontend/                   # Next.js 16 + React 19 + Tailwind 4
-├── scraper/                    # Puppeteer scraper (satellite + street view)
+├── docs/                       # Hackathon materials + developer notes
 ├── pyproject.toml              # Python project manifest + tool config
 ├── Justfile                    # Task runner
 └── output/                     # Generated reports + eval history

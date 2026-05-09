@@ -17,16 +17,16 @@ backend:
 
 # Start Next.js frontend dev server
 frontend:
-    cd frontend && npm run dev
+    cd frontend && pnpm dev
 
 # Run the Puppeteer scraper for one address
 scrape address:
-    cd scraper && npx ts-node src/index.ts "{{address}}"
+    cd backend/scraper && npx ts-node src/index.ts "{{address}}"
 
 # Lint Python + TypeScript
 lint:
     uv run ruff check backend/
-    cd frontend && npx eslint .
+    cd frontend && pnpm lint
 
 # Auto-format Python code
 format:
@@ -55,8 +55,8 @@ eval-dashboard:
 # Install all dependencies
 setup:
     uv sync --extra dev
-    cd frontend && npm install
-    cd scraper && npm install
+    cd frontend && pnpm install
+    cd backend/scraper && npm install
     uv run pre-commit install
 
 # Remove generated caches

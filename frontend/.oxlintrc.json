@@ -1,0 +1,21 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "nextjs", "react", "import"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "pedantic": "warn"
+  },
+  "rules": {
+    "eslint/max-lines": ["error", { "max": 500, "skipBlankLines": true, "skipComments": true }],
+    "eslint/max-lines-per-function": ["warn", { "max": 80, "skipBlankLines": true, "skipComments": true }],
+    "eslint/max-params": ["warn", { "max": 4 }],
+    "eslint/max-depth": ["warn", { "max": 4 }],
+    "eslint/max-nested-callbacks": ["warn", { "max": 3 }],
+    "eslint/complexity": ["warn", { "max": 15 }],
+    "typescript/no-explicit-any": ["error", { "fixToUnknown": true }],
+    "react/react-in-jsx-scope": "off",
+    "import/no-unassigned-import": "off",
+    "eslint/no-promise-executor-return": "off"
+  }
+}

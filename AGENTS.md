@@ -4,13 +4,13 @@ Instructions for AI coding agents (Claude Code, Codex, Cursor).
 
 ## Architecture
 
-Three components, one repo:
+Two top-level components, one repo:
 
 | Component | Language | Entry point |
 |-----------|----------|-------------|
 | **Backend** | Python 3.12 / FastAPI | `backend/main.py` |
 | **Frontend** | TypeScript / Next.js 16 | `frontend/app/` |
-| **Scraper** | TypeScript / Puppeteer | `scraper/src/index.ts` |
+| **Scraper** | TypeScript / Puppeteer | `backend/scraper/src/index.ts` |
 
 Data flow: Frontend → Backend API → (Scraper + GIS + Vision LLMs + Solar API) → Measurements → Cost Estimate → Report
 
@@ -36,8 +36,21 @@ Data flow: Frontend → Backend API → (Scraper + GIS + Vision LLMs + Solar API
 
 - **Strict mode** enabled in both frontend and scraper
 - **Next.js App Router** (frontend/app/ directory)
-- **ESLint** for linting: `cd frontend && npx eslint .`
+- **ESLint + oxlint** for linting: `cd frontend && pnpm lint`
 - **Tailwind CSS 4** for styling
+- **pnpm** for frontend package management (not npm)
+
+### Oxlint guardrails (frontend)
+
+Configured in `frontend/.oxlintrc.json` to prevent vibe-coding problems:
+
+- `max-lines: 500` — no god-files; forces decomposition
+- `max-lines-per-function: 80` — keeps functions scannable
+- `max-params: 4` — too many params = needs an options object
+- `max-depth: 4` — deeply nested code is hard to reason about
+- `max-nested-callbacks: 3` — callback hell prevention
+- `complexity: 15` — cyclomatic complexity cap
+- `no-explicit-any: error` — forces proper typing
 
 ## Environment variables
 

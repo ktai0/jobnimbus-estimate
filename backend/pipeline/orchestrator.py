@@ -21,7 +21,7 @@ from models.schemas import (
 )
 from pipeline.estimate import generate_estimate
 from pipeline.gis import query_county_gis, query_microsoft_buildings
-from pipeline.measurements import combine_measurements, compute_pitch_multiplier
+from pipeline.measurements import combine_measurements
 from pipeline.vision import analyze_aerial, estimate_pitch, validate_with_sunroof
 
 logger = logging.getLogger(__name__)
