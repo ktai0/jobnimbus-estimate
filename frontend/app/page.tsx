@@ -1,9 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { startAnalysis, pollJob, type JobStatus } from "@/lib/api";
+import { startAnalysis, startUploadAnalysis, pollJob, getPdfUrl, type JobStatus } from "@/lib/api";
+import UploadInput from "./components/UploadInput";
 
-const PIPELINE_STEPS = [
+type InputMode = "address" | "upload";
+
+const ADDRESS_STEPS = [
   { key: "pending", label: "Initializing", icon: "1" },
   { key: "geocoding", label: "Geocoding address", icon: "2" },
   { key: "scraping", label: "Capturing aerial & street view imagery", icon: "3" },
@@ -12,44 +15,64 @@ const PIPELINE_STEPS = [
   { key: "estimating", label: "Generating estimate", icon: "6" },
 ];
 
-function getStepIndex(status: string): number {
+const UPLOAD_STEPS = [
+  { key: "pending", label: "Initializing", icon: "1" },
+  { key: "analyzing", label: "AI analyzing roof geometry", icon: "2" },
+  { key: "measuring", label: "Computing measurements", icon: "3" },
+  { key: "estimating", label: "Generating estimate", icon: "4" },
+];
+
+function getStepIndex(status: string, mode: InputMode): number {
   if (status === "pending") return 0;
-  if (status === "running") return 3;
-  if (status === "completed") return 6;
+  if (mode === "upload") {
+    if (status === "running") return 1;
+    if (status === "completed") return 4;
+  } else {
+    if (status === "running") return 3;
+    if (status === "completed") return 6;
+  }
   return 0;
 }
 
 export default function Home() {
+  const [mode, setMode] = useState<InputMode>("address");
   const [address, setAddress] = useState("");
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const startPolling = (jobId: string, addr: string) => {
+    setJobStatus({ job_id: jobId, status: "pending", address: addr, report: null, error: null });
+    pollJob(jobId, (status) => {
+      setJobStatus(status);
+      if (status.status === "completed" || status.status === "failed") {
+        setLoading(false);
+        if (status.status === "failed") setError(status.error || "Analysis failed");
+      }
+    });
+  };
 
   const handleAnalyze = async () => {
     if (!address.trim()) return;
     setLoading(true);
     setError(null);
     setJobStatus(null);
-
     try {
       const resp = await startAnalysis(address);
-      setJobStatus({
-        job_id: resp.job_id,
-        status: "pending",
-        address,
-        report: null,
-        error: null,
-      });
+      startPolling(resp.job_id, address);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to start analysis");
+      setLoading(false);
+    }
+  };
 
-      pollJob(resp.job_id, (status) => {
-        setJobStatus(status);
-        if (status.status === "completed") {
-          setLoading(false);
-        } else if (status.status === "failed") {
-          setLoading(false);
-          setError(status.error || "Analysis failed");
-        }
-      });
+  const handleUpload = async (data: { aerialPhotos: File[]; streetviewPhotos: File[]; address: string }) => {
+    setLoading(true);
+    setError(null);
+    setJobStatus(null);
+    try {
+      const resp = await startUploadAnalysis(data.aerialPhotos, data.streetviewPhotos, data.address || undefined);
+      startPolling(resp.job_id, data.address || "Uploaded Photos");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start analysis");
       setLoading(false);
@@ -57,7 +80,8 @@ export default function Home() {
   };
 
   const report = jobStatus?.report;
-  const activeStep = jobStatus ? getStepIndex(jobStatus.status) : -1;
+  const steps = mode === "upload" ? UPLOAD_STEPS : ADDRESS_STEPS;
+  const activeStep = jobStatus ? getStepIndex(jobStatus.status, mode) : -1;
 
   return (
     <main className="flex-1">
@@ -78,30 +102,50 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Address Input */}
+      {/* Input Section */}
       <section className="max-w-5xl mx-auto px-6 py-12">
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8">
-          <h2 className="text-lg font-semibold text-gray-900 mb-4">Enter a property address</h2>
-          <div className="flex gap-3">
-            <input
-              type="text"
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
-              placeholder="e.g., 21106 Kenswick Meadows Ct, Humble, TX 77338"
-              className="flex-1 px-4 py-3 border border-gray-300 rounded-lg text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              disabled={loading}
-            />
-            <button
-              onClick={handleAnalyze}
-              disabled={loading || !address.trim()}
-              className="px-8 py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {loading ? "Analyzing..." : "Analyze"}
-            </button>
+          {/* Mode Toggle */}
+          <div className="flex bg-gray-100 rounded-lg p-1 mb-6">
+            {([["address", "Enter Address"], ["upload", "Upload Photos"]] as const).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => !loading && setMode(key)}
+                className={`flex-1 px-4 py-2 rounded-md text-sm font-medium transition-colors ${
+                  mode === key ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
+                }`}
+                disabled={loading}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-          {error && (
-            <p className="mt-3 text-red-600 text-sm">{error}</p>
+
+          {mode === "address" ? (
+            <>
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Enter a property address</h2>
+              <div className="flex gap-3">
+                <input
+                  type="text"
+                  value={address}
+                  onChange={(e) => setAddress(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
+                  placeholder="e.g., 21106 Kenswick Meadows Ct, Humble, TX 77338"
+                  className="flex-1 px-4 py-3 border border-gray-300 rounded-lg text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  disabled={loading}
+                />
+                <button
+                  onClick={handleAnalyze}
+                  disabled={loading || !address.trim()}
+                  className="px-8 py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {loading ? "Analyzing..." : "Analyze"}
+                </button>
+              </div>
+              {error && <p className="mt-3 text-red-600 text-sm">{error}</p>}
+            </>
+          ) : (
+            <UploadInput onSubmit={handleUpload} loading={loading} error={error} />
           )}
         </div>
       </section>
@@ -112,7 +156,7 @@ export default function Home() {
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8">
             <h3 className="text-lg font-semibold text-gray-900 mb-6">Analyzing property...</h3>
             <div className="space-y-4">
-              {PIPELINE_STEPS.map((step, i) => (
+              {steps.map((step, i) => (
                 <div key={step.key} className="flex items-center gap-4">
                   <div
                     className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
@@ -142,15 +186,19 @@ export default function Home() {
       )}
 
       {/* Report */}
-      {report && <ReportView report={report} />}
+      {report && jobStatus && <ReportView report={report} jobId={jobStatus.job_id} />}
     </main>
   );
 }
 
-function ReportView({ report }: { report: NonNullable<JobStatus["report"]> }) {
+function ReportView({ report, jobId }: { report: NonNullable<JobStatus["report"]>; jobId: string }) {
   const [tier, setTier] = useState<string>("standard");
   const m = report.measurements;
   const estimate = report.estimates[tier];
+
+  const handleDownloadPdf = () => {
+    window.open(getPdfUrl(jobId), "_blank");
+  };
 
   return (
     <section className="max-w-5xl mx-auto px-6 pb-12 space-y-6">
@@ -171,6 +219,15 @@ function ReportView({ report }: { report: NonNullable<JobStatus["report"]> }) {
             }`}>
               {Math.round(m.confidence * 100)}% confidence
             </span>
+            <button
+              onClick={handleDownloadPdf}
+              className="px-4 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-1.5"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              Download PDF
+            </button>
           </div>
         </div>
       </div>

@@ -109,6 +109,29 @@ export async function startAnalysis(address: string): Promise<AnalyzeResponse> {
   return res.json();
 }
 
+export async function startUploadAnalysis(
+  aerialPhotos: File[],
+  streetviewPhotos: File[],
+  address?: string
+): Promise<AnalyzeResponse> {
+  const formData = new FormData();
+  for (const file of aerialPhotos) {
+    formData.append("aerial_photos", file);
+  }
+  for (const file of streetviewPhotos) {
+    formData.append("streetview_photos", file);
+  }
+  if (address) {
+    formData.append("address", address);
+  }
+  const res = await fetch(`${API_BASE}/api/analyze/upload`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
 export async function getJobStatus(jobId: string): Promise<JobStatus> {
   const res = await fetch(`${API_BASE}/api/jobs/${jobId}`);
   if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -127,6 +150,10 @@ export async function listReports(): Promise<
   const res = await fetch(`${API_BASE}/api/reports`);
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
+}
+
+export function getPdfUrl(jobId: string): string {
+  return `${API_BASE}/api/reports/${jobId}/pdf`;
 }
 
 export function pollJob(

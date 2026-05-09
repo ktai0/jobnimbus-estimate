@@ -7,14 +7,16 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from config import OUTPUT_DIR
 from models.schemas import PropertyReport
-from pipeline.orchestrator import analyze_property
+from pipeline.orchestrator import analyze_from_photos, analyze_property
+from pipeline.pdf_report import generate_pdf
 
 logging.basicConfig(
     level=logging.INFO,
@@ -87,6 +89,21 @@ async def _run_analysis(job_id: str, address: str):
         jobs[job_id]["error"] = str(e)
 
 
+async def _run_upload_analysis(job_id: str, aerial_paths: list[str], streetview_paths: list[str], address: str):
+    """Background task to run analysis from uploaded photos."""
+    jobs[job_id]["status"] = "running"
+    report_dir = os.path.join(OUTPUT_DIR, job_id)
+    try:
+        report = await analyze_from_photos(aerial_paths, streetview_paths, address, report_dir)
+        reports_store[job_id] = report
+        jobs[job_id]["status"] = "completed"
+        jobs[job_id]["report"] = report
+    except Exception as e:
+        logger.error("Upload analysis failed for job %s: %s", job_id, e)
+        jobs[job_id]["status"] = "failed"
+        jobs[job_id]["error"] = str(e)
+
+
 @app.post("/api/analyze", response_model=AnalyzeResponse)
 async def analyze(request: AnalyzeRequest, background_tasks: BackgroundTasks):
     """Start analysis for a property address."""
@@ -107,6 +124,57 @@ async def analyze(request: AnalyzeRequest, background_tasks: BackgroundTasks):
         job_id=job_id,
         status="pending",
         message=f"Analysis started for: {request.address}",
+    )
+
+
+@app.post("/api/analyze/upload", response_model=AnalyzeResponse)
+async def analyze_upload(
+    background_tasks: BackgroundTasks,
+    aerial_photos: list[UploadFile] = File(default=[]),
+    streetview_photos: list[UploadFile] = File(default=[]),
+    address: str = Form(default=""),
+):
+    """Start analysis from user-uploaded aerial and streetview photos."""
+    if not aerial_photos and not streetview_photos:
+        raise HTTPException(status_code=400, detail="At least one photo is required")
+
+    job_id = datetime.now().strftime("%Y%m%d_%H%M%S_") + "upload_" + str(hash(str(id(aerial_photos))) % 10000)
+    upload_dir = os.path.join(OUTPUT_DIR, job_id)
+    os.makedirs(upload_dir, exist_ok=True)
+
+    # Save uploaded files to disk
+    aerial_paths: list[str] = []
+    for i, photo in enumerate(aerial_photos):
+        ext = os.path.splitext(photo.filename or "photo.jpg")[1] or ".jpg"
+        path = os.path.join(upload_dir, f"aerial_{i}{ext}")
+        content = await photo.read()
+        with open(path, "wb") as f:
+            f.write(content)
+        aerial_paths.append(path)
+
+    streetview_paths: list[str] = []
+    for i, photo in enumerate(streetview_photos):
+        ext = os.path.splitext(photo.filename or "photo.jpg")[1] or ".jpg"
+        path = os.path.join(upload_dir, f"streetview_{i}{ext}")
+        content = await photo.read()
+        with open(path, "wb") as f:
+            f.write(content)
+        streetview_paths.append(path)
+
+    label = address.strip() or "Uploaded Photos"
+    jobs[job_id] = {
+        "status": "pending",
+        "address": label,
+        "report": None,
+        "error": None,
+    }
+
+    background_tasks.add_task(_run_upload_analysis, job_id, aerial_paths, streetview_paths, label)
+
+    return AnalyzeResponse(
+        job_id=job_id,
+        status="pending",
+        message=f"Upload analysis started ({len(aerial_paths)} aerial, {len(streetview_paths)} streetview photos)",
     )
 
 
@@ -146,6 +214,30 @@ async def get_report(job_id: str):
     if job_id not in reports_store:
         raise HTTPException(status_code=404, detail="Report not found")
     return reports_store[job_id]
+
+
+@app.get("/api/reports/{job_id}/pdf")
+async def get_report_pdf(job_id: str):
+    """Generate and download a PDF report for a completed analysis."""
+    if job_id not in reports_store:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    report = reports_store[job_id]
+    address = jobs[job_id]["address"]
+    safe_name = "".join(c if c.isalnum() else "_" for c in address)[:60]
+    report_dir = os.path.join(OUTPUT_DIR, safe_name)
+
+    try:
+        pdf_path = generate_pdf(report, report_dir)
+    except Exception as e:
+        logger.error("PDF generation failed for job %s: %s", job_id, e)
+        raise HTTPException(status_code=500, detail="PDF generation failed") from e
+
+    return FileResponse(
+        path=pdf_path,
+        media_type="application/pdf",
+        filename=f"CloudNimbus_Report_{safe_name}.pdf",
+    )
 
 
 class BatchRequest(BaseModel):

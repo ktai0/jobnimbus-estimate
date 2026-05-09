@@ -1,9 +1,6 @@
 """
 Measurement engine: combine data from GIS, SAM2, vision LLM, and Sunroof
 into final roof measurements with confidence scoring.
-
-Key improvement: cross-validation with Solar API now CORRECTS measurements
-when there is a significant mismatch, rather than just logging warnings.
 """
 
 from __future__ import annotations
@@ -48,7 +45,6 @@ def combine_measurements(
     aerial_analysis: dict,
     sunroof_usable_sqft: float | None,
     sunroof_validation: dict,
-    solar_insights: dict | None = None,
 ) -> RoofMeasurements:
     """
     Combine all data sources into final roof measurements.
@@ -56,7 +52,7 @@ def combine_measurements(
     Strategy:
     1. Pick the best footprint estimate (highest confidence weighted by source reliability)
     2. Apply pitch multiplier to get roof area
-    3. Cross-validate against Solar API — ADJUST numbers when Solar disagrees significantly
+    3. Cross-validate against Sunroof — ADJUST numbers when Sunroof disagrees significantly
     4. Use aerial vision analysis for line items (with aspect-ratio-based fallback)
     """
 
@@ -77,21 +73,39 @@ def combine_measurements(
             footprint_sources = footprint_sources[:-1]
 
     # Apply eave overhang correction to building-outline sources.
+    # EXCEPTION: when 2+ independent sources agree within 3%, they're both measuring
+    # the same physical boundary (roof drip line from aerial imagery). Applying
+    # eave correction would double-count the overhang that's already captured.
     _building_outline_prefixes = ("county_gis", "osm", "microsoft")
-    for i, src in enumerate(footprint_sources):
-        if any(src.source.startswith(p) for p in _building_outline_prefixes):
-            corrected = src.footprint_sqft * EAVE_OVERHANG_FACTOR
-            logger.debug(
-                "Eave overhang correction: %s %.0f -> %.0f sqft",
-                src.source,
-                src.footprint_sqft,
-                corrected,
+    outline_sources = [s for s in footprint_sources if any(s.source.startswith(p) for p in _building_outline_prefixes)]
+
+    skip_eave = False
+    if len(outline_sources) >= 2:
+        sorted_areas = sorted(s.footprint_sqft for s in outline_sources)
+        spread_pct = (sorted_areas[-1] - sorted_areas[0]) / sorted_areas[0] if sorted_areas[0] > 0 else 1.0
+        if spread_pct <= 0.03:
+            skip_eave = True
+            logger.info(
+                "Skipping eave correction: %d sources agree within %.1f%%",
+                len(outline_sources),
+                spread_pct * 100,
             )
-            footprint_sources[i] = FootprintSource(
-                source=src.source,
-                footprint_sqft=corrected,
-                confidence=src.confidence,
-            )
+
+    if not skip_eave:
+        for i, src in enumerate(footprint_sources):
+            if any(src.source.startswith(p) for p in _building_outline_prefixes):
+                corrected = src.footprint_sqft * EAVE_OVERHANG_FACTOR
+                logger.debug(
+                    "Eave overhang correction: %s %.0f -> %.0f sqft",
+                    src.source,
+                    src.footprint_sqft,
+                    corrected,
+                )
+                footprint_sources[i] = FootprintSource(
+                    source=src.source,
+                    footprint_sqft=corrected,
+                    confidence=src.confidence,
+                )
 
     # Only use vision LLM footprint as fallback when no reliable footprint data
     has_gis = any(
@@ -164,54 +178,7 @@ def combine_measurements(
         pitch.pitch,
     )
 
-    # --- Step 3: Cross-validate AND CORRECT using Solar API ---
-    # Unlike the old approach that only logged mismatches, we now blend toward
-    # Solar API when it provides reliable data and disagrees with us.
-
-    # 3a: Google Solar API — most reliable external reference
-    solar_correction_applied = False
-    if solar_insights and solar_insights.get("whole_roof_sqft"):
-        solar_roof = solar_insights["whole_roof_sqft"]
-        solar_ratio = total_roof_sqft / solar_roof if solar_roof > 0 else 0
-        solar_quality = solar_insights.get("quality", "HIGH")
-
-        if 0.85 <= solar_ratio <= 1.15:
-            logger.info(
-                "Solar API cross-validation PASS: our %.0f vs solar %.0f (ratio %.2f)",
-                total_roof_sqft,
-                solar_roof,
-                solar_ratio,
-            )
-        elif solar_roof > 0:
-            # Solar disagrees — blend toward Solar based on quality
-            # HIGH quality solar data: trust Solar 60%, ours 40%
-            # MEDIUM quality: trust Solar 40%, ours 60%
-            # SUNROOF_SCRAPE: only 15% — derived whole_roof_sqft is unreliable
-            #   (usable/0.80 ratio varies wildly from 54-85% in practice)
-            if solar_quality == "HIGH":
-                solar_weight = 0.60
-            elif solar_quality == "SUNROOF_SCRAPE":
-                solar_weight = 0.15
-            else:
-                solar_weight = 0.40
-            our_weight = 1.0 - solar_weight
-
-            corrected_sqft = total_roof_sqft * our_weight + solar_roof * solar_weight
-            logger.warning(
-                "Solar API CORRECTION: our %.0f vs solar %.0f (ratio %.2f). "
-                "Blending %.0f%% solar -> corrected %.0f sqft",
-                total_roof_sqft,
-                solar_roof,
-                solar_ratio,
-                solar_weight * 100,
-                corrected_sqft,
-            )
-            total_roof_sqft = corrected_sqft
-            # Back-compute the implied footprint
-            best_footprint = total_roof_sqft / pitch.multiplier
-            solar_correction_applied = True
-
-    # 3b: Sunroof usable sqft cross-validation
+    # --- Step 3: Cross-validate AND CORRECT using Sunroof ---
     if sunroof_usable_sqft and sunroof_usable_sqft > 0:
         estimated_total_from_sunroof = sunroof_usable_sqft / SUNROOF_USABLE_RATIO_MID
         ratio = total_roof_sqft / estimated_total_from_sunroof
@@ -222,9 +189,8 @@ def combine_measurements(
                 estimated_total_from_sunroof,
                 ratio,
             )
-        elif not solar_correction_applied:
-            # Only apply sunroof correction if we didn't already correct via Solar
-            sunroof_weight = 0.30  # Sunroof is less reliable than Solar API
+        else:
+            sunroof_weight = 0.30
             our_weight = 1.0 - sunroof_weight
             corrected_sqft = total_roof_sqft * our_weight + estimated_total_from_sunroof * sunroof_weight
             logger.warning(
@@ -264,8 +230,6 @@ def combine_measurements(
         pitch,
         sunroof_usable_sqft,
         total_roof_sqft,
-        solar_insights,
-        solar_correction_applied,
     )
 
     return RoofMeasurements(
@@ -380,63 +344,36 @@ def _compute_confidence(
     pitch: PitchEstimate,
     sunroof_sqft: float | None,
     total_sqft: float,
-    solar_insights: dict | None = None,
-    solar_correction_applied: bool = False,
 ) -> float:
     """Compute overall confidence score."""
     score = 0.0
 
-    # Footprint confidence (max 0.35)
+    # Footprint confidence (max 0.45)
     if footprint_sources:
         best_conf = max(s.confidence for s in footprint_sources)
-        score += best_conf * 0.35
+        score += best_conf * 0.45
 
-    # Multiple sources agree (max 0.15)
+    # Multiple sources agree (max 0.20)
     if len(footprint_sources) >= 2:
         values = [s.footprint_sqft for s in footprint_sources]
         if values:
             mean = sum(values) / len(values)
             spread = max(abs(v - mean) / mean for v in values) if mean > 0 else 1.0
             if spread < 0.10:
-                score += 0.15
+                score += 0.20
             elif spread < 0.20:
-                score += 0.08
+                score += 0.10
 
-    # Pitch confidence (max 0.15)
-    score += pitch.confidence * 0.15
+    # Pitch confidence (max 0.20)
+    score += pitch.confidence * 0.20
 
-    # Sunroof cross-validation (max 0.10)
+    # Sunroof cross-validation (max 0.15)
     if sunroof_sqft and sunroof_sqft > 0 and total_sqft > 0:
         estimated = sunroof_sqft / SUNROOF_USABLE_RATIO_MID
         ratio = total_sqft / estimated
         if 0.85 <= ratio <= 1.15:
-            score += 0.10
+            score += 0.15
         elif 0.75 <= ratio <= 1.25:
-            score += 0.05
-
-    # Solar API cross-validation (max 0.25)
-    if solar_insights and solar_insights.get("whole_roof_sqft") and total_sqft > 0:
-        solar_roof = solar_insights["whole_roof_sqft"]
-        solar_ratio = total_sqft / solar_roof if solar_roof > 0 else 0
-
-        # If we applied solar correction, the ratio should now be closer
-        if solar_correction_applied:
-            # Correction was applied, so we trust the result more
-            score += 0.20
-        else:
-            # Area agreement (no correction needed = good)
-            if 0.85 <= solar_ratio <= 1.15:
-                score += 0.15
-            elif 0.75 <= solar_ratio <= 1.30:
-                score += 0.08
-
-            # Pitch agreement
-            solar_rise = solar_insights.get("avg_pitch_rise", 0)
-            if solar_rise > 0:
-                pitch_diff = abs(pitch.rise - solar_rise)
-                if pitch_diff <= 1:
-                    score += 0.10
-                elif pitch_diff <= 2:
-                    score += 0.05
+            score += 0.08
 
     return round(min(score, 1.0), 2)

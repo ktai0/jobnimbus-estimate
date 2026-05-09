@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CloudNimbus Roof Report — {{ address }}</title>
+<style>
+  /* ── Reset & Base ───────────────────────────────────── */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 10pt;
+    color: #1a1a1a;
+    line-height: 1.45;
+  }
+
+  /* ── Paged Media ────────────────────────────────────── */
+  @page {
+    size: letter;
+    margin: 0.6in 0.7in 0.9in 0.7in;
+    @bottom-center {
+      content: "";
+    }
+  }
+  @page :first {
+    margin: 0;
+    @bottom-center { content: none; }
+  }
+
+  .page { page-break-after: always; }
+  .page:last-child { page-break-after: auto; }
+
+  /* ── Footer ─────────────────────────────────────────── */
+  .page-footer {
+    position: fixed;
+    bottom: 0.2in;
+    left: 0.7in;
+    right: 0.7in;
+    display: flex;
+    justify-content: space-between;
+    font-size: 7.5pt;
+    color: #999;
+    border-top: 1px solid #e0e0e0;
+    padding-top: 4pt;
+  }
+
+  /* ── Cover Page ─────────────────────────────────────── */
+  .cover {
+    position: relative;
+    width: 8.5in;
+    height: 11in;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    page-break-after: always;
+  }
+  .cover-bg {
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    object-fit: cover;
+    z-index: 0;
+  }
+  .cover-overlay {
+    position: absolute;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: linear-gradient(
+      to bottom,
+      rgba(0,0,0,0.10) 0%,
+      rgba(0,0,0,0.25) 50%,
+      rgba(0,0,0,0.75) 100%
+    );
+    z-index: 1;
+  }
+  .cover-content {
+    position: relative;
+    z-index: 2;
+    padding: 0.8in;
+    color: #fff;
+  }
+  .cover-brand {
+    font-size: 28pt;
+    font-weight: 700;
+    letter-spacing: -0.5pt;
+    margin-bottom: 4pt;
+  }
+  .cover-tagline {
+    font-size: 11pt;
+    font-weight: 400;
+    opacity: 0.85;
+    margin-bottom: 28pt;
+  }
+  .cover-address {
+    font-size: 16pt;
+    font-weight: 600;
+    margin-bottom: 6pt;
+  }
+  .cover-date {
+    font-size: 10pt;
+    opacity: 0.75;
+  }
+
+  /* ── Section Headings ───────────────────────────────── */
+  h2 {
+    font-size: 15pt;
+    font-weight: 700;
+    color: #1a1a1a;
+    margin-bottom: 12pt;
+    padding-bottom: 4pt;
+    border-bottom: 2px solid #2563eb;
+  }
+  h3 {
+    font-size: 11pt;
+    font-weight: 600;
+    color: #333;
+    margin-bottom: 8pt;
+  }
+
+  /* ── Stat Boxes ─────────────────────────────────────── */
+  .stat-row {
+    display: flex;
+    gap: 10pt;
+    margin-bottom: 16pt;
+  }
+  .stat-box {
+    flex: 1;
+    border: 1px solid #e0e0e0;
+    border-radius: 4pt;
+    padding: 10pt;
+    text-align: center;
+  }
+  .stat-label {
+    font-size: 7.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.5pt;
+    color: #888;
+    margin-bottom: 3pt;
+  }
+  .stat-value {
+    font-size: 16pt;
+    font-weight: 700;
+    color: #1a1a1a;
+  }
+  .stat-sub {
+    font-size: 7.5pt;
+    color: #aaa;
+    margin-top: 2pt;
+  }
+
+  /* ── Confidence Badge ───────────────────────────────── */
+  .badge {
+    display: inline-block;
+    padding: 3pt 10pt;
+    border-radius: 10pt;
+    font-size: 8pt;
+    font-weight: 600;
+  }
+  .badge-green  { background: #dcfce7; color: #166534; }
+  .badge-yellow { background: #fef9c3; color: #854d0e; }
+  .badge-red    { background: #fee2e2; color: #991b1b; }
+
+  /* ── Images ─────────────────────────────────────────── */
+  .img-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8pt;
+    margin-bottom: 14pt;
+  }
+  .img-grid img {
+    width: calc(50% - 4pt);
+    border-radius: 4pt;
+    border: 1px solid #e0e0e0;
+    object-fit: cover;
+  }
+  .img-full {
+    width: 100%;
+    border-radius: 4pt;
+    border: 1px solid #e0e0e0;
+    margin-bottom: 14pt;
+    object-fit: cover;
+    max-height: 3.2in;
+  }
+
+  /* ── Tables ─────────────────────────────────────────── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 14pt;
+    font-size: 9pt;
+  }
+  th {
+    text-align: left;
+    padding: 5pt 6pt;
+    background: #f8f9fa;
+    border-bottom: 1.5pt solid #dee2e6;
+    font-weight: 600;
+    color: #555;
+    font-size: 7.5pt;
+    text-transform: uppercase;
+    letter-spacing: 0.3pt;
+  }
+  th.right, td.right { text-align: right; }
+  td {
+    padding: 4pt 6pt;
+    border-bottom: 0.5pt solid #f0f0f0;
+  }
+  tr.subtotal td {
+    font-weight: 600;
+    border-top: 1pt solid #dee2e6;
+    padding-top: 6pt;
+  }
+
+  /* ── Cost Estimate Hero ─────────────────────────────── */
+  .hero-total {
+    text-align: center;
+    background: linear-gradient(135deg, #1e40af 0%, #2563eb 100%);
+    color: #fff;
+    border-radius: 6pt;
+    padding: 20pt 16pt;
+    margin-bottom: 18pt;
+  }
+  .hero-total .label {
+    font-size: 9pt;
+    text-transform: uppercase;
+    letter-spacing: 1pt;
+    opacity: 0.85;
+    margin-bottom: 4pt;
+  }
+  .hero-total .amount {
+    font-size: 32pt;
+    font-weight: 800;
+    letter-spacing: -1pt;
+  }
+  .hero-total .tier-label {
+    font-size: 9pt;
+    opacity: 0.7;
+    margin-top: 4pt;
+  }
+
+  /* ── Tier Comparison Cards ──────────────────────────── */
+  .tier-cards {
+    display: flex;
+    gap: 10pt;
+    margin-bottom: 18pt;
+  }
+  .tier-card {
+    flex: 1;
+    border: 1px solid #e0e0e0;
+    border-radius: 4pt;
+    padding: 12pt;
+    text-align: center;
+  }
+  .tier-card.active {
+    border-color: #2563eb;
+    background: #eff6ff;
+  }
+  .tier-card .tier-name {
+    font-size: 8pt;
+    text-transform: uppercase;
+    letter-spacing: 0.5pt;
+    color: #888;
+    margin-bottom: 4pt;
+  }
+  .tier-card .tier-price {
+    font-size: 16pt;
+    font-weight: 700;
+    color: #1a1a1a;
+  }
+  .tier-card.active .tier-price {
+    color: #1e40af;
+  }
+
+  /* ── Summary Row ────────────────────────────────────── */
+  .summary-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 3pt 0;
+    font-size: 9pt;
+    color: #555;
+  }
+  .summary-row.total {
+    font-size: 12pt;
+    font-weight: 700;
+    color: #1a1a1a;
+    border-top: 1.5pt solid #333;
+    padding-top: 8pt;
+    margin-top: 4pt;
+  }
+
+  /* ── Compact Tier Section ───────────────────────────── */
+  .compact-tier {
+    margin-bottom: 18pt;
+  }
+  .compact-tier h3 {
+    margin-bottom: 6pt;
+  }
+
+  /* ── Property Info ──────────────────────────────────── */
+  .prop-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 14pt;
+  }
+  .prop-info .address-block h3 {
+    font-size: 13pt;
+    margin-bottom: 2pt;
+  }
+  .prop-info .coords {
+    font-size: 8pt;
+    color: #888;
+  }
+
+
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ PAGE 1: COVER ═══════════════ -->
+<div class="cover">
+  {% if satellite_image_uri %}
+  <img class="cover-bg" src="{{ satellite_image_uri }}" alt="Satellite">
+  {% else %}
+  <div class="cover-bg" style="background:#1e3a5f;"></div>
+  {% endif %}
+  <div class="cover-overlay"></div>
+  <div class="cover-content">
+    <div class="cover-brand">CloudNimbus</div>
+    <div class="cover-tagline">Aerial Roof Measurement &amp; Auto-Estimating Report</div>
+    <div class="cover-address">{{ formatted_address or address }}</div>
+    <div class="cover-date">{{ report_date_formatted }}</div>
+  </div>
+</div>
+
+<!-- ═══════════════ PAGE 2: PROPERTY OVERVIEW ═══════════════ -->
+<div class="page">
+  <h2>Property Overview</h2>
+
+  <div class="prop-info">
+    <div class="address-block">
+      <h3>{{ formatted_address or address }}</h3>
+      <div class="coords">{{ "%.6f"|format(lat) }}, {{ "%.6f"|format(lng) }}</div>
+    </div>
+    <div>
+      {% if confidence >= 0.7 %}
+        <span class="badge badge-green">{{ (confidence * 100)|round|int }}% Confidence</span>
+      {% elif confidence >= 0.4 %}
+        <span class="badge badge-yellow">{{ (confidence * 100)|round|int }}% Confidence</span>
+      {% else %}
+        <span class="badge badge-red">{{ (confidence * 100)|round|int }}% Confidence</span>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if satellite_image_uri %}
+  <h3>Satellite View</h3>
+  <img class="img-full" src="{{ satellite_image_uri }}" alt="Satellite image">
+  {% endif %}
+
+  {% if streetview_image_uris %}
+  <h3>Street Views</h3>
+  <div class="img-grid">
+    {% for uri in streetview_image_uris[:2] %}
+    <img src="{{ uri }}" alt="Street view {{ loop.index }}">
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+<!-- ═══════════════ PAGE 3: MEASUREMENTS ═══════════════ -->
+<div class="page">
+  <h2>Roof Measurements</h2>
+
+  <div class="stat-row">
+    <div class="stat-box">
+      <div class="stat-label">Total Roof Area</div>
+      <div class="stat-value">{{ total_roof_sqft|format_number }} ft&sup2;</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">Footprint Area</div>
+      <div class="stat-value">{{ footprint_sqft|format_number }} ft&sup2;</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">Pitch</div>
+      <div class="stat-value">{{ pitch_display }}</div>
+      <div class="stat-sub">Multiplier: {{ pitch_multiplier }}</div>
+    </div>
+    <div class="stat-box">
+      <div class="stat-label">Roof Shape</div>
+      <div class="stat-value">{{ roof_shape }}</div>
+      <div class="stat-sub">{{ facet_count }} facets</div>
+    </div>
+  </div>
+
+  {% if footprint_sources %}
+  <h3>Data Sources</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Source</th>
+        <th class="right">Footprint (ft&sup2;)</th>
+        <th class="right">Confidence</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for src in footprint_sources %}
+      <tr>
+        <td>{{ src.source|replace("_", " ")|title }}</td>
+        <td class="right">{{ src.footprint_sqft|format_number }}</td>
+        <td class="right">{{ (src.confidence * 100)|round|int }}%</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <h3>Roof Line Items</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Feature</th>
+        <th class="right">Length (ft)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for name, value in line_items %}
+      {% if value > 0 %}
+      <tr>
+        <td>{{ name }}</td>
+        <td class="right">{{ value|round|int }}</td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+
+
+</div>
+
+<!-- ═══════════════ PAGE 4: COST ESTIMATE (STANDARD) ═══════════════ -->
+{% if standard_estimate %}
+<div class="page">
+  <h2>Cost Estimate</h2>
+
+  <div class="hero-total">
+    <div class="label">Estimated Total Cost</div>
+    <div class="amount">{{ standard_estimate.grand_total|format_currency }}</div>
+    <div class="tier-label">Standard Tier</div>
+  </div>
+
+  <!-- Tier comparison cards -->
+  <div class="tier-cards">
+    {% for tier_key, tier_label in [("economy", "Economy"), ("standard", "Standard"), ("premium", "Premium")] %}
+    {% if estimates.get(tier_key) %}
+    <div class="tier-card {{ 'active' if tier_key == 'standard' else '' }}">
+      <div class="tier-name">{{ tier_label }}</div>
+      <div class="tier-price">{{ estimates[tier_key].grand_total|format_currency }}</div>
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+
+  <!-- Materials breakdown -->
+  <h3>Materials</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Item</th>
+        <th class="right">Qty</th>
+        <th class="right">Unit</th>
+        <th class="right">Unit Cost</th>
+        <th class="right">Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in standard_estimate.material_items %}
+      <tr>
+        <td>{{ item.description }}</td>
+        <td class="right">{{ item.quantity }}</td>
+        <td class="right">{{ item.unit }}</td>
+        <td class="right">{{ item.unit_cost|format_currency }}</td>
+        <td class="right">{{ item.total_cost|format_currency }}</td>
+      </tr>
+      {% endfor %}
+      <tr class="subtotal">
+        <td colspan="4" style="text-align:right;">Materials Subtotal</td>
+        <td class="right">{{ standard_estimate.materials_subtotal|format_currency }}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Labor breakdown -->
+  <h3>Labor</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Item</th>
+        <th class="right">Qty</th>
+        <th class="right">Unit</th>
+        <th class="right">Unit Cost</th>
+        <th class="right">Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in standard_estimate.labor_items %}
+      <tr>
+        <td>{{ item.description }}</td>
+        <td class="right">{{ item.quantity }}</td>
+        <td class="right">{{ item.unit }}</td>
+        <td class="right">{{ item.unit_cost|format_currency }}</td>
+        <td class="right">{{ item.total_cost|format_currency }}</td>
+      </tr>
+      {% endfor %}
+      <tr class="subtotal">
+        <td colspan="4" style="text-align:right;">Labor Subtotal</td>
+        <td class="right">{{ standard_estimate.labor_subtotal|format_currency }}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- Other items -->
+  {% if standard_estimate.other_items %}
+  <h3>Other</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Item</th>
+        <th class="right">Qty</th>
+        <th class="right">Unit</th>
+        <th class="right">Unit Cost</th>
+        <th class="right">Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in standard_estimate.other_items %}
+      <tr>
+        <td>{{ item.description }}</td>
+        <td class="right">{{ item.quantity }}</td>
+        <td class="right">{{ item.unit }}</td>
+        <td class="right">{{ item.unit_cost|format_currency }}</td>
+        <td class="right">{{ item.total_cost|format_currency }}</td>
+      </tr>
+      {% endfor %}
+      <tr class="subtotal">
+        <td colspan="4" style="text-align:right;">Other Subtotal</td>
+        <td class="right">{{ standard_estimate.other_subtotal|format_currency }}</td>
+      </tr>
+    </tbody>
+  </table>
+  {% endif %}
+
+  <div class="summary-row">
+    <span>Waste Factor (12%)</span>
+    <span>{{ standard_estimate.waste_factor_amount|format_currency }}</span>
+  </div>
+  <div class="summary-row">
+    <span>Overhead &amp; Profit (25% on labor)</span>
+    <span>{{ standard_estimate.overhead_profit_amount|format_currency }}</span>
+  </div>
+  <div class="summary-row total">
+    <span>Grand Total</span>
+    <span>{{ standard_estimate.grand_total|format_currency }}</span>
+  </div>
+</div>
+{% endif %}
+
+<!-- ═══════════════ PAGE 5: ECONOMY & PREMIUM DETAILS ═══════════════ -->
+{% if economy_estimate or premium_estimate %}
+<div class="page">
+  <h2>Tier Comparison Details</h2>
+
+  {% for tier_key, tier_label, est in [("economy", "Economy", economy_estimate), ("premium", "Premium", premium_estimate)] %}
+  {% if est %}
+  <div class="compact-tier">
+    <h3>{{ tier_label }} Tier — {{ est.grand_total|format_currency }}</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th class="right">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in est.material_items %}
+        <tr>
+          <td>{{ item.description }}</td>
+          <td class="right">{{ item.total_cost|format_currency }}</td>
+        </tr>
+        {% endfor %}
+        {% for item in est.labor_items %}
+        <tr>
+          <td>{{ item.description }}</td>
+          <td class="right">{{ item.total_cost|format_currency }}</td>
+        </tr>
+        {% endfor %}
+        {% for item in est.other_items %}
+        <tr>
+          <td>{{ item.description }}</td>
+          <td class="right">{{ item.total_cost|format_currency }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="summary-row">
+      <span>Materials</span>
+      <span>{{ est.materials_subtotal|format_currency }}</span>
+    </div>
+    <div class="summary-row">
+      <span>Labor</span>
+      <span>{{ est.labor_subtotal|format_currency }}</span>
+    </div>
+    <div class="summary-row">
+      <span>Waste Factor</span>
+      <span>{{ est.waste_factor_amount|format_currency }}</span>
+    </div>
+    <div class="summary-row">
+      <span>Overhead &amp; Profit</span>
+      <span>{{ est.overhead_profit_amount|format_currency }}</span>
+    </div>
+    <div class="summary-row total">
+      <span>Grand Total</span>
+      <span>{{ est.grand_total|format_currency }}</span>
+    </div>
+  </div>
+  {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- ── Running footer (all pages except cover) ── -->
+<div class="page-footer">
+  <span>CloudNimbus &mdash; Aerial Roof Measurement &amp; Auto-Estimating</span>
+  <span>{{ formatted_address or address }}</span>
+</div>
+
+</body>
+</html>

@@ -8,6 +8,7 @@ import base64
 import json
 import logging
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -35,14 +36,33 @@ def _openai_image(image_path: str) -> dict:
 
 
 def _parse_json(text: str) -> dict:
-    """Parse JSON from LLM response, stripping markdown fences."""
+    """Parse JSON from LLM response, handling markdown fences and surrounding prose."""
     text = text.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
-    text = text.strip()
-    return json.loads(text)
+
+    # Fast path: direct parse
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Strip markdown fences (```json ... ```) with possible surrounding text
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+    if fence_match:
+        try:
+            return json.loads(fence_match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # Find outermost { ... } block (handles prose before/after JSON)
+    brace_start = text.find("{")
+    brace_end = text.rfind("}")
+    if brace_start != -1 and brace_end > brace_start:
+        try:
+            return json.loads(text[brace_start : brace_end + 1])
+        except json.JSONDecodeError:
+            pass
+
+    raise json.JSONDecodeError(f"Could not extract JSON from LLM response: {text[:200]}", text, 0)
 
 
 # ---------------------------------------------------------------------------
@@ -107,11 +127,13 @@ async def _openai_vision_call(
     for img_path in image_paths:
         content.append(_openai_image(img_path))
 
+    # Force JSON output for OpenAI models (requires "JSON" in prompt text)
     response = await client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": content}],
         max_tokens=max_tokens,
         temperature=temperature,
+        response_format={"type": "json_object"},
     )
     text = response.choices[0].message.content or "{}"
     return _parse_json(text)
@@ -263,53 +285,163 @@ async def analyze_aerial(
 # Pitch estimation (multi-model ensemble)
 # ---------------------------------------------------------------------------
 
-_PITCH_PROMPT = """You are a professional roofing estimator analyzing a residential building from street-level photos to determine the roof pitch.
+_PITCH_PROMPT = """You are a professional roofing estimator. Your task is to MEASURE the roof pitch geometrically from these street-level photos.
 
-CRITICAL: Measure the ANGLE of the roof slope carefully. Most people underestimate pitch.
+## MEASUREMENT METHOD (do this step by step):
 
-## How to visually estimate pitch:
-1. Find where the roof meets the wall (eave line) and trace up to the ridge
-2. The RISE is the vertical height from eave to ridge
-3. The RUN is the horizontal distance from the wall to the ridge (roughly half the building width for a gable)
-4. Pitch = rise:run (normalized to 12 run)
+1. Find a GABLE END of the roof — the triangular wall section where you can see the roof slope profile.
+2. Measure these three things IN PIXELS in the image:
+   - **wall_height_px**: The height of the rectangular wall below the eave line (from ground/foundation to where the roof starts)
+   - **gable_height_px**: The height of the triangular gable section ABOVE the eave line (from eave to ridge peak)
+   - **half_width_px**: The horizontal distance from one side of the building to the ridge (half the building width at the gable end)
+3. Compute the ratio: gable_height_px / half_width_px — this IS the rise/run ratio.
 
-## Visual calibration guide:
-- 4:12 = 18.4 deg — Almost flat-looking. Ranch-style homes. Roof barely slopes. You can almost see the roof surface from ground level.
-- 5:12 = 22.6 deg — Slight slope. Still a gentle angle. Common in warm climates (FL, TX coast).
-- 6:12 = 26.6 deg — Moderate slope. MOST COMMON in US residential. The triangle of the gable end is noticeable but not dramatic.
-- 7:12 = 30.3 deg — Steeper. Gable triangle is clearly visible and prominent.
-- 8:12 = 33.7 deg — Steep. The roof takes up a significant portion of the building's visual profile. Common in areas with snow (CO, IL, MO, VA). The gable triangle is tall.
-- 9:12 = 36.9 deg — Very steep. Roof dominates the view. Colonial/traditional style.
-- 10:12 = 39.8 deg — Near 40 degrees. Dramatic steep roof.
-- 12:12 = 45.0 deg — Equal rise and run. Very steep, A-frame look.
+## RATIO TO PITCH REFERENCE:
+- ratio ≈ 0.33 → 4:12 pitch
+- ratio ≈ 0.42 → 5:12 pitch
+- ratio ≈ 0.50 → 6:12 pitch
+- ratio ≈ 0.58 → 7:12 pitch
+- ratio ≈ 0.67 → 8:12 pitch
+- ratio ≈ 0.83 → 10:12 pitch
+- ratio ≈ 1.00 → 12:12 pitch
 
-## Key indicators of STEEPER pitch (7:12+):
-- Gable end triangle is tall relative to wall height
-- You can barely see the roof surface from ground level
-- Building looks "top-heavy" with a lot of roof
-- Snow-prone regions (Midwest, Mountain states, Northeast)
-- Traditional/colonial architectural style
+## CRITICAL CALIBRATION:
+- If gable triangle height is about HALF the half-width → 6:12
+- If gable triangle height is about TWO-THIRDS of the half-width → 8:12
+- If gable triangle height EQUALS the half-width → 12:12
+- Most people UNDERESTIMATE pitch. A gable that looks "moderate" is often 7-8:12, not 6:12.
 
-## Key indicators of LOWER pitch (4-5:12):
-- Roof appears nearly flat from ground level
-- You can see a large area of the roof surface
-- Modern/ranch/Mediterranean style
-- Warm climate region
-
-Examine ALL provided photos carefully. Look at the roof from multiple angles.
+## IMPORTANT:
+- Measure from MULTIPLE photos if possible and average your measurements
+- If no gable end is visible, estimate from the roof slope angle seen in profile
+- Focus on the MAIN roof, not dormers or small additions
 
 Return ONLY valid JSON:
-{"pitch": "<rise>:<run>", "rise": <number>, "run": 12, "confidence": <0-1>, "reasoning": "<brief explanation of what you see>"}"""
+{"wall_height_px": <number>, "gable_height_px": <number>, "half_width_px": <number>, "ratio": <float>, "rise": <number>, "run": 12, "confidence": <0-1>, "reasoning": "<what you measured and how>"}"""
+
+
+# ---------------------------------------------------------------------------
+# Geographic pitch priors
+# ---------------------------------------------------------------------------
+
+# States where snow loads encourage steeper pitches
+_SNOW_STATES = frozenset(
+    {
+        "CO",
+        "CT",
+        "IA",
+        "ID",
+        "IL",
+        "IN",
+        "KS",
+        "KY",
+        "MA",
+        "MD",
+        "ME",
+        "MI",
+        "MN",
+        "MO",
+        "MT",
+        "ND",
+        "NE",
+        "NH",
+        "NJ",
+        "NY",
+        "OH",
+        "OR",
+        "PA",
+        "RI",
+        "SD",
+        "UT",
+        "VA",
+        "VT",
+        "WA",
+        "WI",
+        "WV",
+        "WY",
+    }
+)
+
+# Warm-climate states where lower pitches are common
+_WARM_STATES = frozenset(
+    {
+        "AZ",
+        "FL",
+        "HI",
+        "LA",
+        "NM",
+        "NV",
+    }
+)
+
+
+def _geographic_pitch_adjustment(median_rise: int, estimates: list[int], state: str | None) -> int:
+    """Nudge pitch when the ensemble vote is close and geographic priors apply.
+
+    Only activates when the ensemble is genuinely split (not overriding strong
+    consensus). A "split" means the median sits right at the boundary between
+    two pitch values and votes are distributed across both.
+    """
+    if state is None or len(estimates) < 3:
+        return median_rise
+
+    # Count how many votes are above vs below the median
+    above = sum(1 for e in estimates if e > median_rise)
+    below = sum(1 for e in estimates if e < median_rise)
+    total = len(estimates)
+
+    # Only nudge if the vote is genuinely split: significant minority disagrees
+    # (at least 30% of votes are not at the median)
+    minority_pct = (above + below) / total
+    if minority_pct < 0.30:
+        return median_rise  # Strong consensus, don't override
+
+    if state in _SNOW_STATES and above > below and median_rise < 10:
+        logger.info("Geographic prior: snow state %s, nudging pitch %d→%d", state, median_rise, median_rise + 1)
+        return median_rise + 1
+
+    if state in _WARM_STATES and below > above and median_rise > 4:
+        logger.info("Geographic prior: warm state %s, nudging pitch %d→%d", state, median_rise, median_rise - 1)
+        return median_rise - 1
+
+    return median_rise
+
+
+def _ratio_to_rise(ratio: float) -> int:
+    """Convert a gable_height/half_width ratio to the nearest standard pitch rise."""
+    # Standard pitch ratios: rise/12
+    standard_pitches = [
+        (4, 4 / 12),
+        (5, 5 / 12),
+        (6, 6 / 12),
+        (7, 7 / 12),
+        (8, 8 / 12),
+        (9, 9 / 12),
+        (10, 10 / 12),
+        (12, 12 / 12),
+    ]
+    best_rise = 6
+    best_diff = float("inf")
+    for rise, std_ratio in standard_pitches:
+        diff = abs(ratio - std_ratio)
+        if diff < best_diff:
+            best_diff = diff
+            best_rise = rise
+    return best_rise
 
 
 async def estimate_pitch(
     openai_client: Any,
     streetview_images: list[str],
     gemini_api_key: str = "",
+    state: str | None = None,
 ) -> PitchEstimate:
     """
-    Multi-model ensemble pitch estimation.
-    Runs GPT-4o (4 temps) + Gemini 2.5 Pro (4 temps), takes median of all.
+    Two-pass multi-model ensemble pitch estimation.
+    Pass 1: LLMs measure gable geometry (pixel measurements → ratio).
+    Pass 2: Python converts ratios to pitch deterministically.
+    Geographic priors nudge borderline cases based on state.
+    Prefers roof-focused images (*_roof.jpg) for clearer slope visibility.
     """
     if not streetview_images:
         logger.info("No street view images, defaulting to 6:12 pitch")
@@ -331,7 +463,18 @@ async def estimate_pitch(
         logger.info("No valid street view images, defaulting to 6:12 pitch")
         return PitchEstimate()
 
-    images = valid_images[:4]
+    # Prefer roof-focused images (pitch=35) for pitch estimation — they show
+    # the roof slope much more clearly, especially for steep roofs
+    roof_images = [p for p in valid_images if "_roof" in Path(p).stem]
+    standard_images = [p for p in valid_images if "_roof" not in Path(p).stem]
+
+    # Use roof images if available, fall back to standard
+    if roof_images:
+        images = roof_images[:4]
+        logger.info("Using %d roof-focused images for pitch estimation", len(images))
+    else:
+        images = standard_images[:4]
+        logger.info("No roof-focused images, using %d standard images", len(images))
 
     # Build ensemble of calls across models and temperatures
     tasks = []
@@ -351,7 +494,12 @@ async def estimate_pitch(
                     temperature=t,
                     max_tokens=500,
                 )
-                rise = int(data.get("rise", 0))
+                # Two-pass: use ratio for deterministic conversion if available
+                ratio = data.get("ratio")
+                if ratio and isinstance(ratio, (int, float)) and ratio > 0:
+                    rise = _ratio_to_rise(float(ratio))
+                else:
+                    rise = int(data.get("rise", 0))
                 return rise, data.get("reasoning", "")
             except Exception as e:
                 logger.warning("GPT-4o pitch (temp=%.1f) failed: %s", t, e)
@@ -376,7 +524,12 @@ async def estimate_pitch(
                         temperature=t,
                         max_tokens=500,
                     )
-                    rise = int(data.get("rise", 0))
+                    # Two-pass: use ratio for deterministic conversion if available
+                    ratio = data.get("ratio")
+                    if ratio and isinstance(ratio, (int, float)) and ratio > 0:
+                        rise = _ratio_to_rise(float(ratio))
+                    else:
+                        rise = int(data.get("rise", 0))
                     return rise, data.get("reasoning", "")
                 except Exception as e:
                     logger.warning("Gemini pitch (temp=%.1f) failed: %s", t, e)
@@ -402,26 +555,30 @@ async def estimate_pitch(
         logger.warning("All pitch estimation models failed, defaulting to 6:12")
         return PitchEstimate()
 
-    # Use proper median of ALL estimates (no outlier filtering).
-    # Previous mode-based filtering discarded one model's votes entirely when
-    # GPT-4o and Gemini disagreed, losing valuable signal from Gemini.
-    # The proper median of all estimates naturally balances biases between models.
+    # Use upper-median of ALL estimates. For even-length lists, take the upper
+    # middle value rather than averaging. This corrects for the known systematic
+    # underestimation bias in vision models (they default to 6:12 "most common").
     filtered = sorted(estimates)
     n = len(filtered)
-    # Average the two middle values for even-length lists, otherwise take middle
-    median_rise = round((filtered[n // 2 - 1] + filtered[n // 2]) / 2) if n % 2 == 0 else filtered[n // 2]
+    median_rise = filtered[n // 2] if n % 2 == 0 else filtered[n // 2]
 
-    # Clamp to residential range. No blunt +1 correction — the larger
-    # multi-model ensemble handles bias naturally.
+    # Clamp to residential range
     if median_rise <= 1:
         median_rise = 6  # couldn't determine, default
     median_rise = max(4, min(median_rise, 12))
 
+    # Apply geographic pitch adjustment for borderline cases, but only when
+    # the split is wide (not adjacent values, which indicates genuine ambiguity)
+    tight_split = n % 2 == 0 and (filtered[n // 2] - filtered[n // 2 - 1] <= 1)
+    if not tight_split:
+        median_rise = _geographic_pitch_adjustment(median_rise, estimates, state)
+
     logger.info(
-        "Pitch ensemble: %d estimates, sorted=%s, median=%d:12",
+        "Pitch ensemble: %d estimates, sorted=%s, median=%d:12, state=%s",
         len(estimates),
         filtered,
         median_rise,
+        state,
     )
 
     run = 12
@@ -472,6 +629,7 @@ Return ONLY JSON:
             ],
             max_tokens=500,
             temperature=0.1,
+            response_format={"type": "json_object"},
         )
         text = response.choices[0].message.content or "{}"
         return _parse_json(text)

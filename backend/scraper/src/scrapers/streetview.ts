@@ -7,8 +7,46 @@ export interface StreetViewResult {
 }
 
 /**
+ * Query the Street View Metadata API to find the panorama location,
+ * then compute the heading from the camera toward the building.
+ */
+async function getHeadingTowardBuilding(
+  lat: number,
+  lng: number,
+  apiKey: string
+): Promise<number> {
+  const metaUrl = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${lat},${lng}&source=outdoor&key=${apiKey}`;
+
+  return new Promise((resolve) => {
+    https.get(metaUrl, (response) => {
+      let body = '';
+      response.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      response.on('end', () => {
+        try {
+          const data = JSON.parse(body);
+          if (data.status === 'OK' && data.location) {
+            const panoLat: number = data.location.lat;
+            const panoLng: number = data.location.lng;
+            const dLng = lng - panoLng;
+            const dLat = lat - panoLat;
+            const heading = ((Math.atan2(dLng, dLat) * 180) / Math.PI + 360) % 360;
+            resolve(heading);
+            return;
+          }
+        } catch {
+          // fall through
+        }
+        resolve(0);
+      });
+    }).on('error', () => {
+      resolve(0);
+    });
+  });
+}
+
+/**
  * Capture Street View images via Google Static Street View API.
- * Takes multiple angles to help with pitch estimation.
+ * Computes heading toward the building so all views face the property.
  */
 export async function captureStreetView(
   lat: number,
@@ -21,24 +59,35 @@ export async function captureStreetView(
   const screenshots: string[] = [];
   const size = '640x480';
 
-  // Capture from multiple headings to see different angles of the roof
-  const headings = [0, 90, 180, 270]; // N, E, S, W
+  // Compute heading from Street View camera toward the building
+  const baseHeading = await getHeadingTowardBuilding(lat, lng, apiKey);
+  const headings = [0, 90, 180, 270].map(
+    (offset) => Math.round((baseHeading + offset) % 360)
+  );
 
-  for (const heading of headings) {
-    const url = `https://maps.googleapis.com/maps/api/streetview?size=${size}&location=${lat},${lng}&heading=${heading}&pitch=20&fov=90&key=${apiKey}`;
-    const filepath = path.join(outputDir, `streetview_${heading}.jpg`);
+  // Standard captures (pitch=20) + roof-focused captures (pitch=35, looking up toward roof)
+  const captureConfigs = [
+    { pitchAngle: 20, suffix: '' },
+    { pitchAngle: 35, suffix: '_roof' },
+  ];
 
-    try {
-      await downloadImage(url, filepath);
-      // Check file size - Google returns a small grey image if no streetview available
-      const stats = fs.statSync(filepath);
-      if (stats.size > 5000) {
-        screenshots.push(filepath);
-      } else {
-        fs.unlinkSync(filepath);
+  for (const { pitchAngle, suffix } of captureConfigs) {
+    for (const heading of headings) {
+      const url = `https://maps.googleapis.com/maps/api/streetview?size=${size}&location=${lat},${lng}&heading=${heading}&pitch=${pitchAngle}&fov=90&key=${apiKey}`;
+      const filepath = path.join(outputDir, `streetview_${heading}${suffix}.jpg`);
+
+      try {
+        await downloadImage(url, filepath);
+        // Check file size - Google returns a small grey image if no streetview available
+        const stats = fs.statSync(filepath);
+        if (stats.size > 5000) {
+          screenshots.push(filepath);
+        } else {
+          fs.unlinkSync(filepath);
+        }
+      } catch {
+        // Skip failed captures
       }
-    } catch {
-      // Skip failed captures
     }
   }
 

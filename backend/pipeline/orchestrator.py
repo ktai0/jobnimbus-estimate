@@ -20,7 +20,7 @@ from models.schemas import (
     PropertyReport,
 )
 from pipeline.estimate import generate_estimate
-from pipeline.gis import query_county_gis, query_microsoft_buildings
+from pipeline.gis import _state_from_address, query_county_gis, query_microsoft_buildings
 from pipeline.measurements import combine_measurements
 from pipeline.vision import analyze_aerial, estimate_pitch, validate_with_sunroof
 
@@ -95,11 +95,34 @@ async def _geocode(address: str) -> tuple:
     return 0, 0, address
 
 
+async def _get_heading_toward_building(client: object, lat: float, lng: float) -> float:
+    """Use Street View Metadata API to find the panorama location, then compute heading toward the building."""
+    import math
+
+    meta_url = (
+        f"https://maps.googleapis.com/maps/api/streetview/metadata"
+        f"?location={lat},{lng}&source=outdoor&key={GOOGLE_MAPS_API_KEY}"
+    )
+    r = await client.get(meta_url)
+    if r.status_code == 200:
+        data = r.json()
+        if data.get("status") == "OK" and "location" in data:
+            pano_lat = data["location"]["lat"]
+            pano_lng = data["location"]["lng"]
+            # Compute heading from panorama position toward the building
+            d_lng = lng - pano_lng
+            d_lat = lat - pano_lat
+            heading = math.degrees(math.atan2(d_lng, d_lat)) % 360
+            return heading
+    # Fallback: 0° (north)
+    return 0.0
+
+
 async def _download_images(lat: float, lng: float, output_dir: str) -> dict:
     """Download satellite and street view images using Google Static APIs."""
     import httpx
 
-    images = {"satellite": [], "streetview": []}
+    images: dict[str, list[str]] = {"satellite": [], "streetview": []}
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         # Satellite at zoom 20
@@ -117,22 +140,27 @@ async def _download_images(lat: float, lng: float, output_dir: str) -> dict:
         if os.path.exists(sat_path):
             images["satellite"].append(sat_path)
 
-        # Street view from 4 headings
-        for heading in [0, 90, 180, 270]:
-            sv_path = os.path.join(output_dir, f"streetview_{heading}.jpg")
-            if not os.path.exists(sv_path):
-                url = (
-                    f"https://maps.googleapis.com/maps/api/streetview"
-                    f"?size=640x480&location={lat},{lng}"
-                    f"&heading={heading}&pitch=15&fov=90"
-                    f"&key={GOOGLE_MAPS_API_KEY}"
-                )
-                r = await client.get(url)
-                if r.status_code == 200 and len(r.content) > 1000:
-                    with open(sv_path, "wb") as f:
-                        f.write(r.content)
-            if os.path.exists(sv_path):
-                images["streetview"].append(sv_path)
+        # Compute heading from Street View camera toward the building
+        base_heading = await _get_heading_toward_building(client, lat, lng)
+        headings = [int((base_heading + offset) % 360) for offset in [0, 90, 180, 270]]
+
+        # Street view: standard (pitch=15) + roof-focused (pitch=35)
+        for heading in headings:
+            for pitch_angle, suffix in [(15, ""), (35, "_roof")]:
+                sv_path = os.path.join(output_dir, f"streetview_{heading}{suffix}.jpg")
+                if not os.path.exists(sv_path):
+                    url = (
+                        f"https://maps.googleapis.com/maps/api/streetview"
+                        f"?size=640x480&location={lat},{lng}"
+                        f"&heading={heading}&pitch={pitch_angle}&fov=90"
+                        f"&key={GOOGLE_MAPS_API_KEY}"
+                    )
+                    r = await client.get(url)
+                    if r.status_code == 200 and len(r.content) > 1000:
+                        with open(sv_path, "wb") as f:
+                            f.write(r.content)
+                if os.path.exists(sv_path):
+                    images["streetview"].append(sv_path)
 
     return images
 
@@ -181,6 +209,9 @@ async def analyze_property(address: str) -> PropertyReport:
     # Step 2: Query GIS for building footprint (run in parallel with vision)
     logger.info("Step 2: Querying GIS + running vision analysis...")
 
+    # Extract state for geographic pitch priors
+    state = _state_from_address(formatted_address) or _state_from_address(address)
+
     footprint_sources: list[FootprintSource] = []
 
     # Run GIS, aerial analysis, and pitch estimation in parallel
@@ -196,7 +227,7 @@ async def analyze_property(address: str) -> PropertyReport:
         else _empty_dict()
     )
 
-    pitch_task = estimate_pitch(client, streetview_images, gemini_api_key=GEMINI_API_KEY)
+    pitch_task = estimate_pitch(client, streetview_images, gemini_api_key=GEMINI_API_KEY, state=state)
 
     sunroof_task = validate_with_sunroof(client, sunroof_image) if sunroof_image else _empty_dict()
 
@@ -272,13 +303,103 @@ async def analyze_property(address: str) -> PropertyReport:
         streetview_images=streetview_images,
         sunroof_image=sunroof_image,
         sunroof_usable_sqft=sunroof_sqft,
-        solar_validation=None,
         report_date=datetime.now().isoformat(),
     )
 
     # Save report
     safe_name = "".join(c if c.isalnum() else "_" for c in address)[:60]
     report_dir = os.path.join(OUTPUT_DIR, safe_name)
+    os.makedirs(report_dir, exist_ok=True)
+    report_path = os.path.join(report_dir, "report.json")
+    with open(report_path, "w") as f:
+        f.write(report.model_dump_json(indent=2))
+    logger.info("Report saved to %s", report_path)
+
+    return report
+
+
+async def analyze_from_photos(
+    aerial_paths: list[str],
+    streetview_paths: list[str],
+    address: str,
+    report_dir: str,
+) -> PropertyReport:
+    """
+    Pipeline for user-uploaded photos: skip geocoding/scraping/GIS,
+    run vision-only analysis → measurements → estimates → report.
+    """
+    logger.info("=== Starting upload-based analysis (address label: %s) ===", address or "(none)")
+
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+
+    # Default GSD for user-uploaded aerial photos (no metadata available)
+    gsd = 0.075
+
+    footprint_sources: list[FootprintSource] = []
+
+    # Run aerial + pitch analysis in parallel
+    async def _empty_dict() -> dict:
+        return {}
+
+    aerial_task = (
+        analyze_aerial(client, aerial_paths[0], gsd, 0, gemini_api_key=GEMINI_API_KEY)
+        if aerial_paths
+        else _empty_dict()
+    )
+
+    pitch_task = estimate_pitch(client, streetview_paths, gemini_api_key=GEMINI_API_KEY, state=None)
+
+    results = await asyncio.gather(aerial_task, pitch_task, return_exceptions=True)
+
+    aerial_analysis = results[0] if not isinstance(results[0], Exception) else {}
+    pitch = results[1] if not isinstance(results[1], Exception) else None
+
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            logger.error("Upload analysis task %d failed: %s", i, r)
+
+    if pitch is None:
+        pitch = PitchEstimate()
+
+    # Combine into measurements (vision-only sources)
+    logger.info("Computing measurements from uploaded photos...")
+    measurements = combine_measurements(
+        footprint_sources=footprint_sources,
+        pitch=pitch,
+        aerial_analysis=aerial_analysis if isinstance(aerial_analysis, dict) else {},
+        sunroof_usable_sqft=None,
+        sunroof_validation={},
+    )
+
+    logger.info(
+        "Measurements: %.0f sqft roof area (%.0f footprint x %.3f pitch multiplier)",
+        measurements.total_roof_sqft,
+        measurements.footprint_sqft,
+        measurements.pitch.multiplier,
+    )
+
+    # Generate estimates for all tiers
+    logger.info("Generating estimates...")
+    estimates = {}
+    for tier in MaterialTier:
+        estimates[tier.value] = generate_estimate(measurements, tier)
+
+    # Build report
+    report = PropertyReport(
+        address=address or "Uploaded Photos",
+        formatted_address=address or "Uploaded Photos",
+        lat=0,
+        lng=0,
+        measurements=measurements,
+        estimates=estimates,
+        satellite_images=aerial_paths,
+        streetview_images=streetview_paths,
+        sunroof_image=None,
+        sunroof_usable_sqft=None,
+        report_date=datetime.now().isoformat(),
+    )
+
+    # Save report
     os.makedirs(report_dir, exist_ok=True)
     report_path = os.path.join(report_dir, "report.json")
     with open(report_path, "w") as f:

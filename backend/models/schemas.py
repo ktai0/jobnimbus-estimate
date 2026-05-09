@@ -80,19 +80,6 @@ class CostEstimate(BaseModel):
     grand_total: float = 0
 
 
-class SolarValidation(BaseModel):
-    """Cross-validation data from Google Solar API (used for confidence, not measurements)."""
-
-    available: bool = False
-    whole_roof_sqft: float | None = None
-    usable_sqft: float | None = None
-    segment_count: int = 0
-    avg_pitch_degrees: float | None = None
-    avg_pitch_rise: int | None = None
-    area_match_ratio: float | None = None  # our_sqft / solar_sqft
-    pitch_match: bool | None = None  # does our pitch agree within 1 step
-
-
 class PropertyReport(BaseModel):
     address: str
     formatted_address: str = ""
@@ -104,5 +91,4 @@ class PropertyReport(BaseModel):
     streetview_images: list[str] = []
     sunroof_image: str | None = None
     sunroof_usable_sqft: float | None = None
-    solar_validation: SolarValidation | None = None
     report_date: str = ""

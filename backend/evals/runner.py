@@ -28,7 +28,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 from config import GEMINI_API_KEY, OPENAI_API_KEY  # noqa: E402
 from evals.benchmarks import CALIBRATION_PROPERTIES, BenchmarkProperty  # noqa: E402
 from models.schemas import FootprintSource, PitchEstimate  # noqa: E402
-from pipeline.gis import query_county_gis, query_microsoft_buildings  # noqa: E402
+from pipeline.gis import _state_from_address, query_county_gis, query_microsoft_buildings  # noqa: E402
 from pipeline.measurements import combine_measurements, compute_pitch_multiplier  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -188,8 +188,9 @@ async def _run_full_eval(
 
     # Vision pitch estimation
     client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    state = _state_from_address(prop.address)
     if streetview_images:
-        detected_pitch = await estimate_pitch(client, streetview_images, gemini_api_key=GEMINI_API_KEY)
+        detected_pitch = await estimate_pitch(client, streetview_images, gemini_api_key=GEMINI_API_KEY, state=state)
     else:
         detected_pitch = PitchEstimate()
 
